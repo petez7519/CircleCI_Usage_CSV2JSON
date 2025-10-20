@@ -3,8 +3,8 @@ import json
 from collections import defaultdict
 
 # Read the CSV file and convert to hierarchical JSON structure
-csv_file_path = '/Users/Pete/Downloads/usage-data-job-01bfbb33-0617-da99-001b-7a8348aac2aa.csv'
-json_file_path = '/Users/Pete/Downloads/usage-data-oct-1-14-2025-hierarchical.json'
+csv_file_path = ''
+json_file_path = ''
 
 # Dictionary to store pipelines
 pipelines = defaultdict(lambda: {
