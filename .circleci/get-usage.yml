@@ -20,23 +20,23 @@ jobs:
       - run:
           name: Calculate date range (last 7 days)
           command: |
-            python3 << EOF
+            python3 -c '
             from datetime import datetime, timedelta
             
             end_date = datetime.now()
             start_date = end_date - timedelta(days=7)
             
             # Format dates as YYYY-MM-DD
-            start = start_date.strftime('%Y-%m-%d')
-            end = end_date.strftime('%Y-%m-%d')
+            start = start_date.strftime("%Y-%m-%d")
+            end = end_date.strftime("%Y-%m-%d")
             
             # Save to environment file
-            with open('date_range.txt', 'w') as f:
+            with open("date_range.txt", "w") as f:
                 f.write(f"START_DATE={start}\n")
                 f.write(f"END_DATE={end}\n")
             
             print(f"Date range: {start} to {end}")
-            EOF
+            '
             
             # Load into environment
             cat date_range.txt >> $BASH_ENV
