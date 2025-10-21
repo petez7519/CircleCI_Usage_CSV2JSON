@@ -18,12 +18,14 @@ jobs:
             pip install requests python-dateutil
       
       - run:
-          name: Calculate date range (last 7 days)
+          name: Calculate date range (last 7 days ending yesterday)
           command: |
             python3 -c '
             from datetime import datetime, timedelta
             
-            end_date = datetime.now()
+            # End date is yesterday
+            end_date = datetime.now() - timedelta(days=1)
+            # Start date is 7 days before yesterday
             start_date = end_date - timedelta(days=7)
             
             # Format dates as YYYY-MM-DD
