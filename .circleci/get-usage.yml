@@ -54,13 +54,7 @@ jobs:
             echo "API URL: https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job"
             
             # Create JSON payload first to debug it
-            PAYLOAD=$(cat <<EOF
-            {
-              "start": "${START_DATE}",
-              "end": "${END_DATE}"
-            }
-            EOF
-            )
+            PAYLOAD="{\"start\":\"${START_DATE}\",\"end\":\"${END_DATE}\"}"
             
             echo "Payload: ${PAYLOAD}"
             
