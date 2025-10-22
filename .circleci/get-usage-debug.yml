@@ -1,0 +1,246 @@
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@4.1.3
+  python: circleci/python@2.1.1
+
+jobs:
+  fetch-usage-data:
+    docker:
+      - image: cimg/python:3.11
+    resource_class: medium
+    steps:
+      - checkout
+      
+      - run:
+          name: Install dependencies
+          command: |
+            pip install requests python-dateutil
+      
+      - run:
+          name: Calculate date range (last 7 days ending yesterday)
+          command: |
+            python3 -c '
+            from datetime import datetime, timedelta
+            
+            # End date is yesterday
+            end_date = datetime.now() - timedelta(days=1)
+            # Start date is 7 days before yesterday
+            start_date = end_date - timedelta(days=7)
+            
+            # Format dates as YYYY-MM-DD
+            start = start_date.strftime("%Y-%m-%d")
+            end = end_date.strftime("%Y-%m-%d")
+            
+            # Save to environment file
+            with open("date_range.txt", "w") as f:
+                f.write(f"START_DATE={start}\n")
+                f.write(f"END_DATE={end}\n")
+            
+            print(f"Date range: {start} to {end}")
+            '
+            
+            # Load into environment
+            cat date_range.txt >> $BASH_ENV
+            source $BASH_ENV
+      
+      - run:
+          name: Start CircleCI Usage API Export Job
+          command: |
+            echo "Starting export job for org: ${CIRCLECI_ORG_ID}"
+            echo "Date range: ${START_DATE} to ${END_DATE}"
+            
+            # Debug: Show the full URL (org ID is already masked)
+            echo "API URL: https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job"
+            
+            # Create JSON payload first to debug it
+            PAYLOAD=$(cat <<EOF
+            {
+              "start": "${START_DATE}",
+              "end": "${END_DATE}",
+              "shared_org_ids": []
+            }
+            EOF
+            )
+            
+            echo "Payload: ${PAYLOAD}"
+            
+            RESPONSE=$(curl -X POST \
+              "https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job" \
+              -H "Circle-Token: ${CIRCLECI_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "${PAYLOAD}" \
+              -w "\nHTTP Status: %{http_code}")
+            
+            echo "Full Response: ${RESPONSE}"
+            
+            # Extract job_id only if response contains it
+            if echo "${RESPONSE}" | grep -q "job_id"; then
+              JOB_ID=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")
+              echo "Export Job ID: ${JOB_ID}"
+              echo "export USAGE_EXPORT_JOB_ID=${JOB_ID}" >> $BASH_ENV
+            else
+              echo "ERROR: No job_id in response"
+              exit 1
+            fi
+            
+            # Extract job_id from response
+            JOB_ID=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")
+            echo "Export Job ID: ${JOB_ID}"
+            echo "export USAGE_EXPORT_JOB_ID=${JOB_ID}" >> $BASH_ENV
+      
+      - run:
+          name: Wait for export job to complete
+          command: |
+            source $BASH_ENV
+            echo "Polling for job completion: ${USAGE_EXPORT_JOB_ID}"
+            
+            MAX_ATTEMPTS=60
+            ATTEMPT=0
+            
+            while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+              STATUS_RESPONSE=$(curl -s \
+                "https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job/${USAGE_EXPORT_JOB_ID}" \
+                -H "Circle-Token: ${CIRCLECI_API_TOKEN}")
+              
+              STATE=$(echo $STATUS_RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['state'])")
+              echo "Current state: ${STATE} (Attempt $((ATTEMPT+1))/${MAX_ATTEMPTS})"
+              
+              if [ "$STATE" = "completed" ]; then
+                echo "Export job completed successfully!"
+                
+                # Extract download URL
+                DOWNLOAD_URL=$(echo $STATUS_RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['download_urls'][0])")
+                echo "export DOWNLOAD_URL=${DOWNLOAD_URL}" >> $BASH_ENV
+                break
+              elif [ "$STATE" = "failed" ]; then
+                echo "Export job failed!"
+                exit 1
+              fi
+              
+              sleep 10
+              ATTEMPT=$((ATTEMPT+1))
+            done
+            
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "Timeout waiting for export job to complete"
+              exit 1
+            fi
+      
+      - run:
+          name: Download usage data CSV
+          command: |
+            source $BASH_ENV
+            echo "Downloading from: ${DOWNLOAD_URL}"
+            
+            # Generate filename with date range
+            FILENAME="usage-data-${START_DATE}-to-${END_DATE}.csv"
+            echo "export CSV_FILENAME=${FILENAME}" >> $BASH_ENV
+            
+            curl -L -o "${FILENAME}" "${DOWNLOAD_URL}"
+            
+            echo "Downloaded: ${FILENAME}"
+            ls -lh "${FILENAME}"
+      
+      - persist_to_workspace:
+          root: .
+          paths:
+            - "*.csv"
+            - date_range.txt
+            - convert_csv_to_json.py
+
+  upload-to-s3:
+    executor: aws-cli/default
+    steps:
+      - attach_workspace:
+          at: .
+      
+      - aws-cli/setup:
+          profile_name: default
+      
+      - run:
+          name: Upload CSV to S3
+          command: |
+            source date_range.txt
+            CSV_FILE=$(ls usage-data-*.csv)
+            
+            S3_PATH="s3://${S3_BUCKET}/circleci-usage-data-petez7519/${CSV_FILE}"
+            
+            echo "Uploading ${CSV_FILE} to ${S3_PATH}"
+            aws s3 cp "${CSV_FILE}" "${S3_PATH}"
+            
+            echo "Upload complete!"
+            echo "export S3_CSV_PATH=${S3_PATH}" >> $BASH_ENV
+      
+      - persist_to_workspace:
+          root: .
+          paths:
+            - "*.csv"
+            - date_range.txt
+            - convert_csv_to_json.py
+
+  convert-to-json:
+    docker:
+      - image: cimg/python:3.11
+    resource_class: medium
+    steps:
+      - checkout
+      
+      - attach_workspace:
+          at: .
+      
+      - run:
+          name: Update Python script with dynamic filenames
+          command: |
+            # Find the CSV file name
+            CSV_FILE=$(ls usage-data-*.csv)
+            JSON_FILE="${CSV_FILE%.csv}-hierarchical.json"
+            
+            echo "CSV file: ${CSV_FILE}"
+            echo "JSON file: ${JSON_FILE}"
+            
+            # Update the Python script to use the current directory files
+            sed -i "s|csv_file_path = .*|csv_file_path = '${CSV_FILE}'|g" convert_csv_to_json.py
+            sed -i "s|json_file_path = .*|json_file_path = '${JSON_FILE}'|g" convert_csv_to_json.py
+            
+            echo "Updated convert_csv_to_json.py with current filenames"
+      
+      - run:
+          name: Convert CSV to hierarchical JSON
+          command: |
+            python3 convert_csv_to_json.py
+      
+      - aws-cli/setup:
+          profile_name: default
+      
+      - run:
+          name: Upload JSON to S3
+          command: |
+            JSON_FILE=$(ls usage-data-*-hierarchical.json)
+            S3_PATH="s3://${S3_BUCKET}/circleci-usage-data-petez7519/${JSON_FILE}"
+            
+            echo "Uploading ${JSON_FILE} to ${S3_PATH}"
+            aws s3 cp "${JSON_FILE}" "${S3_PATH}"
+            
+            echo "JSON upload complete!"
+            echo "S3 Location: ${S3_PATH}"
+
+workflows:
+  usage-data-pipeline:
+    jobs:
+      - fetch-usage-data:
+          context: circleci-usage-api
+      
+      - upload-to-s3:
+          context:
+            - circleci-usage-api
+            - aws-credentials
+          requires:
+            - fetch-usage-data
+      
+      - convert-to-json:
+          context:
+            - circleci-usage-api
+            - aws-credentials
+          requires:
+            - upload-to-s3
