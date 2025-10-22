@@ -50,38 +50,38 @@ jobs:
             echo "Starting export job for org: ${CIRCLECI_ORG_ID}"
             echo "Date range: ${START_DATE} to ${END_DATE}"
             
-            # Debug: Show the full URL (org ID is already masked)
-            echo "API URL: https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job"
-            
-            # Create JSON payload first to debug it
-            PAYLOAD="{\"start\":\"${START_DATE}\",\"end\":\"${END_DATE}\"}"
-            
+            # Create JSON payload
+            PAYLOAD="{\"start\":\"${START_DATE}\",\"end\":\"${END_DATE}\",\"shared_org_ids\":[]}"
             echo "Payload: ${PAYLOAD}"
             
-            RESPONSE=$(curl -X POST \
+            # Make request and capture HTTP status separately
+            HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" -X POST \
               "https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job" \
               -H "Circle-Token: ${CIRCLECI_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "${PAYLOAD}" \
-              -w "\nHTTP Status: %{http_code}")
+              -d "${PAYLOAD}")
             
-            echo "Full Response: ${RESPONSE}"
+            echo "HTTP Status: ${HTTP_CODE}"
+            echo "Response Body:"
+            cat response.json
             
-            # Extract job_id only if response contains it
-            if echo "${RESPONSE}" | grep -q "job_id"; then
-              JOB_ID=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")
-              echo "Export Job ID: ${JOB_ID}"
-              echo "export USAGE_EXPORT_JOB_ID=${JOB_ID}" >> $BASH_ENV
-            else
+            # Check if successful
+            if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+              echo "ERROR: API request failed with status ${HTTP_CODE}"
+              exit 1
+            fi
+            
+            # Extract job_id
+            JOB_ID=$(cat response.json | python3 -c "import sys, json; print(json.load(sys.stdin).get('job_id', ''))")
+            
+            if [ -z "$JOB_ID" ]; then
               echo "ERROR: No job_id in response"
               exit 1
             fi
             
-            # Extract job_id from response
-            JOB_ID=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")
             echo "Export Job ID: ${JOB_ID}"
             echo "export USAGE_EXPORT_JOB_ID=${JOB_ID}" >> $BASH_ENV
-      
+            
       - run:
           name: Wait for export job to complete
           command: |
