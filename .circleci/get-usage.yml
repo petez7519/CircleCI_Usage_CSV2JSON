@@ -53,30 +53,29 @@ jobs:
             # Debug: Show the full URL (org ID is already masked)
             echo "API URL: https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job"
             
-            # Create JSON payload first to debug it
-            PAYLOAD=$(cat <<EOF
-            {
-              "start": "${START_DATE}",
-              "end": "${END_DATE}",
-              "shared_org_ids": []
-            }
-            EOF
-            )
+            # Create JSON payload
+            PAYLOAD="{\"start\":\"${START_DATE}\",\"end\":\"${END_DATE}\",\"shared_org_ids\":[]}"
             
             echo "Payload: ${PAYLOAD}"
             
-            RESPONSE=$(curl -X POST \
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
               "https://circleci.com/api/v2/organizations/${CIRCLECI_ORG_ID}/usage-export-job" \
               -H "Circle-Token: ${CIRCLECI_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "${PAYLOAD}" \
-              -w "\nHTTP Status: %{http_code}")
+              -d "${PAYLOAD}")
             
             echo "Full Response: ${RESPONSE}"
             
+            # Extract HTTP status
+            HTTP_STATUS=$(echo "${RESPONSE}" | grep "HTTP_STATUS" | cut -d':' -f2)
+            echo "HTTP Status: ${HTTP_STATUS}"
+            
+            # Get just the JSON response (everything before HTTP_STATUS line)
+            JSON_RESPONSE=$(echo "${RESPONSE}" | sed '/HTTP_STATUS/d')
+            
             # Extract job_id only if response contains it
-            if echo "${RESPONSE}" | grep -q "job_id"; then
-              JOB_ID=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")
+            if echo "${JSON_RESPONSE}" | grep -q "job_id"; then
+              JOB_ID=$(echo "${JSON_RESPONSE}" | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")
               echo "Export Job ID: ${JOB_ID}"
               echo "export USAGE_EXPORT_JOB_ID=${JOB_ID}" >> $BASH_ENV
             else
